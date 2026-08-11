@@ -19,6 +19,7 @@ Examples:
 import logging
 import os
 from pathlib import Path
+from typing import Any
 
 import hydra
 import kinder
@@ -32,6 +33,11 @@ from prpl_utils.utils import sample_seed_from_rng, timer
 
 from kinder_bilevel_planning.agent import AgentFailure, BilevelPlanningAgent
 from kinder_bilevel_planning.env_models import create_bilevel_planning_models
+from kinder_bilevel_planning.regression import (
+    get_action_excess,
+    hash_observation,
+    write_trace,
+)
 
 # from imageio.v2 import imwrite  # type: ignore
 
@@ -40,7 +46,6 @@ from kinder_bilevel_planning.env_models import create_bilevel_planning_models
 
 @hydra.main(version_base=None, config_name="config", config_path="conf/")
 def _main(cfg: DictConfig) -> None:
-
     logging.info(f"Running seed={cfg.seed}, env={cfg.env.env_name}")
 
     # Create the environment.
@@ -85,17 +90,42 @@ def _main(cfg: DictConfig) -> None:
 
     # Evaluate.
     rng = np.random.default_rng(cfg.seed)
-    metrics: list[dict[str, float]] = []
+    configured_episode_seeds = cfg.get("eval_episode_seeds")
+    if configured_episode_seeds is not None:
+        episode_seeds = [int(s) for s in configured_episode_seeds]
+        if len(episode_seeds) != cfg.num_eval_episodes:
+            raise ValueError(
+                "eval_episode_seeds must contain exactly num_eval_episodes seeds"
+            )
+    else:
+        episode_seeds = [
+            sample_seed_from_rng(rng) for _ in range(cfg.num_eval_episodes)
+        ]
+
+    current_dir = Path(HydraConfig.get().runtime.output_dir)
+    trace_folder = Path(cfg.trace_folder)
+    if cfg.save_action_traces:
+        trace_folder.mkdir(parents=True, exist_ok=True)
+
+    metrics: list[dict[str, float | bool | int | str]] = []
     for eval_episode in range(cfg.num_eval_episodes):
         logging.info(f"Starting evaluation episode {eval_episode}")
+        episode_seed = episode_seeds[eval_episode]
+        trace_path = (
+            trace_folder / f"episode-{eval_episode:03d}.jsonl"
+            if cfg.save_action_traces
+            else None
+        )
         try:
             episode_metrics = _run_single_episode_evaluation(
                 agent,
                 env,
-                rng,
+                episode_seed,
                 max_eval_steps=cfg.max_eval_steps,
+                trace_path=trace_path,
             )
             episode_metrics["eval_episode"] = eval_episode
+            episode_metrics["validation_revision"] = cfg.validation_revision
             metrics.append(episode_metrics)
         except Exception as e:
             logging.error(
@@ -106,8 +136,18 @@ def _main(cfg: DictConfig) -> None:
                 "steps": 0,
                 "planning_time": 0.0,
                 "execution_time": 0.0,
+                "env_step_time": 0.0,
                 "reward": 0.0,
                 "eval_episode": eval_episode,
+                "episode_seed": episode_seed,
+                "actions_executed": 0,
+                "out_of_space_actions": 0,
+                "out_of_bounds_actions": 0,
+                "max_action_excess": 0.0,
+                "max_base_action_excess": 0.0,
+                "failure_type": "exception",
+                "error": str(e),
+                "validation_revision": cfg.validation_revision,
             }
             metrics.append(episode_metrics)
 
@@ -115,15 +155,13 @@ def _main(cfg: DictConfig) -> None:
     df = pd.DataFrame(metrics)
 
     # Save results and config.
-    current_dir = HydraConfig.get().runtime.output_dir
-
     # Save the metrics dataframe.
-    results_path = os.path.join(current_dir, "results.csv")
+    results_path = os.path.join(str(current_dir), "results.csv")
     df.to_csv(results_path, index=False)
     logging.info(f"Saved results to {results_path}")
 
     # Save the full hydra config.
-    config_path = os.path.join(current_dir, "config.yaml")
+    config_path = os.path.join(str(current_dir), "config.yaml")
     with open(config_path, "w", encoding="utf-8") as f:
         OmegaConf.save(cfg, f)
     logging.info(f"Saved config to {config_path}")
@@ -135,17 +173,29 @@ def _main(cfg: DictConfig) -> None:
 def _run_single_episode_evaluation(
     agent: BilevelPlanningAgent,
     env: Env,
-    rng: np.random.Generator,
+    episode_seed: int,
     max_eval_steps: int,
-) -> dict[str, float]:
+    trace_path: Path | None = None,
+) -> dict[str, float | bool | int | str]:
     steps = 0
     success = False
     total_reward = 0.0
-    seed = sample_seed_from_rng(rng)
-    obs, info = env.reset(seed=seed)
+    obs, info = env.reset(seed=episode_seed)
     planning_time = 0.0  # time spent generating plans (abstract + skill planning)
     execution_time = 0.0  # time spent in agent.step() + agent.update()
     env_step_time = 0.0  # time spent in env.step() (physics + rendering)
+    actions_executed = 0
+    out_of_space_actions = 0
+    out_of_bounds_actions = 0
+    max_action_excess = 0.0
+    max_base_action_excess = 0.0
+    trace_records: list[dict[str, Any]] = [
+        {
+            "event": "reset",
+            "episode_seed": episode_seed,
+            "state_hash": hash_observation(obs),
+        }
+    ]
     planning_failed = False
     with timer() as result:
         try:
@@ -156,13 +206,23 @@ def _run_single_episode_evaluation(
     planning_time += result["time"]
     logging.debug(f"Planning took {result['time']:.2f}s")
     if planning_failed:
-        return {
+        metrics: dict[str, float | bool | int | str] = {
             "success": False,
             "steps": steps,
             "planning_time": planning_time,
             "execution_time": execution_time,
+            "env_step_time": env_step_time,
             "reward": total_reward,
+            "episode_seed": episode_seed,
+            "actions_executed": actions_executed,
+            "out_of_space_actions": out_of_space_actions,
+            "out_of_bounds_actions": out_of_bounds_actions,
+            "max_action_excess": max_action_excess,
+            "max_base_action_excess": max_base_action_excess,
+            "failure_type": "planning_failure",
         }
+        write_trace(trace_path, trace_records)
+        return metrics
     for _ in range(max_eval_steps):
         step_failed = False
         with timer() as result:
@@ -173,16 +233,55 @@ def _run_single_episode_evaluation(
                 step_failed = True
         execution_time += result["time"]
         if step_failed:
-            return {
+            metrics = {
                 "success": False,
                 "steps": steps,
                 "planning_time": planning_time,
                 "execution_time": execution_time,
+                "env_step_time": env_step_time,
                 "reward": total_reward,
+                "episode_seed": episode_seed,
+                "actions_executed": actions_executed,
+                "out_of_space_actions": out_of_space_actions,
+                "out_of_bounds_actions": out_of_bounds_actions,
+                "max_action_excess": max_action_excess,
+                "max_base_action_excess": max_base_action_excess,
+                "failure_type": "controller_failure",
             }
+            write_trace(trace_path, trace_records)
+            return metrics
+
+        action_array = np.asarray(action)
+        action_in_space = bool(env.action_space.contains(action))
+        action_excess = get_action_excess(env.action_space, action_array)
+        base_action_excess = float(np.max(action_excess[:3]))
+        current_max_action_excess = float(np.max(action_excess))
+        if not action_in_space:
+            out_of_space_actions += 1
+        if current_max_action_excess > 0.0:
+            out_of_bounds_actions += 1
+        max_action_excess = max(max_action_excess, current_max_action_excess)
+        max_base_action_excess = max(max_base_action_excess, base_action_excess)
+        state_hash_before = hash_observation(obs)
         with timer() as result:
             obs, rew, done, truncated, info = env.step(action)
         env_step_time += result["time"]
+        actions_executed += 1
+        trace_records.append(
+            {
+                "event": "step",
+                "step": actions_executed - 1,
+                "action": action_array.tolist(),
+                "action_in_space": action_in_space,
+                "max_action_excess": current_max_action_excess,
+                "max_base_action_excess": base_action_excess,
+                "state_hash_before": state_hash_before,
+                "state_hash_after": hash_observation(obs),
+                "reward": float(rew),
+                "terminated": bool(done),
+                "truncated": bool(truncated),
+            }
+        )
         reward = float(rew)
         total_reward += reward
         assert not truncated
@@ -201,13 +300,23 @@ def _run_single_episode_evaluation(
     logging.debug(
         f"Timing: policy={execution_time:.2f}s, env.step={env_step_time:.2f}s"
     )
-    return {
+    metrics = {
         "success": success,
         "steps": steps,
         "planning_time": planning_time,
         "execution_time": execution_time,
+        "env_step_time": env_step_time,
         "reward": total_reward,
+        "episode_seed": episode_seed,
+        "actions_executed": actions_executed,
+        "out_of_space_actions": out_of_space_actions,
+        "out_of_bounds_actions": out_of_bounds_actions,
+        "max_action_excess": max_action_excess,
+        "max_base_action_excess": max_base_action_excess,
+        "failure_type": "" if success else "horizon_or_update_failure",
     }
+    write_trace(trace_path, trace_records)
+    return metrics
 
 
 if __name__ == "__main__":
