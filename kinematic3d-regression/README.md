@@ -4,6 +4,11 @@ This directory contains experiment infrastructure for comparing the maintained
 pre-change KinDER revision with the Kinematic3D pull request stack. It does not modify
 environment behavior.
 
+An autonomous cluster worker should read
+[`CLUSTER_AGENT_PLAN.md`](CLUSTER_AGENT_PLAN.md) before setup. It defines the scientific
+purpose, constraints, smoke and full gates, interpretation rules, outputs, and later
+baseline batches.
+
 ## Revisions
 
 | Label | Kindergarden commit | Scope |
