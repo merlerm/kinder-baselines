@@ -13,6 +13,13 @@ max_eval_steps: 3000
 make_videos: False
 video_folder: ${hydra:runtime.output_dir}/videos
 
+# Regression instrumentation. The outer seed deterministically generates the episode
+# seeds when eval_episode_seeds is null.
+validation_revision: ""
+eval_episode_seeds: null
+save_action_traces: False
+trace_folder: ${hydra:runtime.output_dir}/traces
+
 # Environment.
 defaults:
   - _self_
