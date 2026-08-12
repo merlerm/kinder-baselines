@@ -46,6 +46,12 @@ export MPLCONFIGDIR="$KINDER_REGRESSION_ROOT/cache/matplotlib"
 export XDG_CACHE_HOME="$KINDER_REGRESSION_ROOT/cache/xdg"
 mkdir -p "$MPLCONFIGDIR" "$XDG_CACHE_HOME"
 
+# Torch/numpy default to one thread pool per core; cap them so concurrent
+# training runs on a shared node do not oversubscribe the machine.
+export OMP_NUM_THREADS="${KINDER_RL_THREADS:-4}"
+export MKL_NUM_THREADS="${KINDER_RL_THREADS:-4}"
+export OPENBLAS_NUM_THREADS="${KINDER_RL_THREADS:-4}"
+
 # kinder-rl writes outputs/ and runs/ relative to the working directory.
 cd "$OUTPUT_DIR"
 "$VENV/bin/python" "$BASELINES_DIR/kinder-rl/experiments/run_experiment.py" \
