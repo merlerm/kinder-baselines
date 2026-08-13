@@ -40,6 +40,11 @@ if [[ -d "$OUTPUT_DIR" ]]; then
 fi
 
 mkdir -p "$OUTPUT_DIR"
+# The compiled IKFast extension links against MKL; resolve it from the pinned
+# copy under the regression root so runs do not depend on shell profiles.
+if [[ -d "$KINDER_REGRESSION_ROOT/lib" ]]; then
+  export LD_LIBRARY_PATH="$KINDER_REGRESSION_ROOT/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+fi
 export MPLCONFIGDIR="$KINDER_REGRESSION_ROOT/cache/matplotlib"
 export XDG_CACHE_HOME="$KINDER_REGRESSION_ROOT/cache/xdg"
 mkdir -p "$MPLCONFIGDIR" "$XDG_CACHE_HOME"
