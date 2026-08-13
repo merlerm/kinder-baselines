@@ -2,9 +2,9 @@
 
 set -euo pipefail
 
-if [[ "$#" -ne 4 ]]; then
-  echo "Usage: $0 <A0..A4> <agent-config> <env-id> <seed>" >&2
-  echo "Example: $0 A0 ppo_basemotion3d kinder/BaseMotion3D-v0 301" >&2
+if [[ "$#" -lt 4 ]]; then
+  echo "Usage: $0 <A0..A4> <agent-config> <env-id> <seed> [extra hydra overrides...]" >&2
+  echo "Example: $0 A0 ppo_basemotion3d kinder/BaseMotion3D-v0 301 max_episode_steps=100" >&2
   exit 2
 fi
 
@@ -12,6 +12,7 @@ LABEL="$1"
 AGENT_CONFIG="$2"
 ENV_ID="$3"
 SEED="$4"
+shift 4
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REGRESSION_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -57,5 +58,6 @@ cd "$OUTPUT_DIR"
 "$VENV/bin/python" "$BASELINES_DIR/kinder-rl/experiments/run_experiment.py" \
   "agent=$AGENT_CONFIG" \
   "env_id=$ENV_ID" \
-  "seed=$SEED"
+  "seed=$SEED" \
+  "$@"
 touch "$OUTPUT_DIR/outputs/.completed"
