@@ -44,6 +44,9 @@ mkdir -p "$OUTPUT_DIR"
 # copy under the regression root so runs do not depend on shell profiles.
 if [[ -d "$KINDER_REGRESSION_ROOT/lib" ]]; then
   export LD_LIBRARY_PATH="$KINDER_REGRESSION_ROOT/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+  # Sequential threading avoids the Intel OpenMP dependency and thread
+  # oversubscription across concurrent jobs.
+  export MKL_THREADING_LAYER=SEQUENTIAL
 fi
 export MPLCONFIGDIR="$KINDER_REGRESSION_ROOT/cache/matplotlib"
 export XDG_CACHE_HOME="$KINDER_REGRESSION_ROOT/cache/xdg"
